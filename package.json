@@ -1,0 +1,28 @@
+{
+  "name": "mon-budget",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev --host 0.0.0.0",
+    "server": "node sync-server/server.mjs",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "start": "nuxt generate && node sync-server/server.mjs",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "test": "node --test tests/budget-core.test.ts tests/sync.test.ts tests/server.test.mjs",
+    "test:e2e": "node --import ./tests/sync-e2e/register.mjs tests/sync-e2e/two-devices.mjs"
+  },
+  "dependencies": {
+    "nuxt": "^4.1.0",
+    "qrcode": "^1.5.4",
+    "vue": "^3.5.0",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.5"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
