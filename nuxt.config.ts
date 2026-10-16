@@ -26,6 +26,7 @@ export default defineNuxtConfig({
 
   // En développement, /api est redirigé vers le serveur de synchronisation (npm run server).
   nitro: {
+    preset: 'github_pages', // ajoute .nojekyll et le fallback 404.html
     devProxy: {
       '/api': { target: 'http://127.0.0.1:3001/api', changeOrigin: true },
     },
