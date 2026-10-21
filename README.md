@@ -30,6 +30,22 @@ npm run start      # production : génère l'application puis la sert avec l'API
 npm run generate   # application statique seule, dans .output/public
 ```
 
+## Répartition d'une opération
+
+Dans le formulaire d'une opération, « Répartir sur plusieurs budgets » découpe le montant en
+lignes : chaque ligne a son montant, son budget et, pour un compte d'épargne, son wallet
+(ex. virement de 500 € vers le Livret A = 300 € Taxe foncière + 200 € Vacances). Un virement
+peut aussi être compté dans un budget de dépense (ex. « Épargne mensuelle »). La somme des
+lignes doit être égale au montant ; le formulaire affiche le reste à répartir.
+
+Format JSON : une opération répartie garde tous ses champs habituels et gagne un tableau
+facultatif `splits` (`[{ amount, categoryId, walletId, toWalletId }]`, au moins 2 lignes).
+Les champs `categoryId` / `walletId` / `toWalletId` contiennent la ligne principale, si bien
+qu'une version plus ancienne de l'app lit toujours le bon montant sur le bon compte. Les
+sauvegardes existantes s'importent sans changement. Attention : un appareil resté sur une
+ancienne version supprimerait les répartitions en se synchronisant ; mettez à jour tous les
+appareils.
+
 ## Synchronisation chiffrée entre appareils
 
 ### Principe

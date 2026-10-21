@@ -10,12 +10,7 @@ export default defineNuxtConfig({
   // `npm run dev` accessible depuis les autres appareils du réseau.
   // Pour la synchronisation, le navigateur exige HTTPS hors localhost : `npm run dev -- --https`.
   devServer: { host: '0.0.0.0', port: 3000 },
-  vite: {
-    server: {
-      allowedHosts: ['finance.tipeee.fr'],
-      hmr: { protocol: 'wss', host: 'finance.tipeee.fr', clientPort: 443 },
-    },
-  },
+
   runtimeConfig: {
     public: {
       // Adresse du serveur de synchronisation. Vide = même origine que l'application
@@ -26,7 +21,6 @@ export default defineNuxtConfig({
 
   // En développement, /api est redirigé vers le serveur de synchronisation (npm run server).
   nitro: {
-    preset: 'github_pages', // ajoute .nojekyll et le fallback 404.html
     devProxy: {
       '/api': { target: 'http://127.0.0.1:3001/api', changeOrigin: true },
     },

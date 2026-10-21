@@ -30,8 +30,8 @@ onMounted(async () => {
   }
 })
 
-const used = (wid: string) => B.S.txns.some(t => t.walletId === wid || t.toWalletId === wid)
-  || B.S.recurrences.some(r => r.walletId === wid || r.toWalletId === wid)
+const used = (wid: string) => [...B.S.txns, ...B.S.recurrences].some(t => t.walletId === wid || t.toWalletId === wid
+  || (t.splits ?? []).some(l => l.walletId === wid || l.toWalletId === wid))
 const unassigned = computed(() => (parseAmount(form.initial) || 0) - form.wallets.reduce((s, w) => s + (parseAmount(w.initial) || 0), 0))
 
 async function addWallet() {
@@ -76,6 +76,10 @@ function submit() {
   for (const x of [...S.txns, ...S.recurrences]) {
     if (x.accountId === id && x.walletId && !keep.has(x.walletId)) x.walletId = null
     if (x.toAccountId === id && x.toWalletId && !keep.has(x.toWalletId)) x.toWalletId = null
+    for (const l of x.splits ?? []) {
+      if (x.accountId === id && l.walletId && !keep.has(l.walletId)) l.walletId = null
+      if (x.toAccountId === id && l.toWalletId && !keep.has(l.toWalletId)) l.toWalletId = null
+    }
   }
   toast(a ? 'Compte modifié' : 'Compte ajouté')
   emit('close')

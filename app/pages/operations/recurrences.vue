@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { money, parseDate, shortDate, stopSeries, deleteSeries, today, weekday } from '~/utils/budget-core'
+import { linesOf, money, parseDate, shortDate, stopSeries, deleteSeries, today, weekday } from '~/utils/budget-core'
 import type { Recurrence } from '~/utils/budget-core'
 
 definePageMeta({ title: 'Opérations récurrentes', noMonth: true })
@@ -24,6 +24,9 @@ const items = computed(() => {
       freq: r.frequency === 'weekly' ? `Chaque ${weekday(r.start)}` : `Le ${parseDate(r.start).getDate()} de chaque mois`,
       until: r.end ? `jusqu'au ${shortDate(r.end)}` : 'sans date de fin',
       sign: r.type === 'income' ? '+' : r.type === 'expense' ? '−' : '',
+      split: linesOf(r).length > 1
+        ? linesOf(r).map(l => `${[B.cat(l.categoryId)?.name, B.walletOf(r.accountId, l.walletId)?.name, B.walletOf(r.toAccountId, l.toWalletId)?.name].filter(Boolean).join(' → ') || 'Sans budget'} ${money(l.amount)}`).join(' · ')
+        : '',
     }
   })
 })
@@ -59,6 +62,7 @@ async function remove(r: Recurrence, n: number) {
           <template v-if="it.r.type === 'transfer'"><SideLabel :account-id="it.r.accountId" :wallet-id="it.r.walletId" /> → <SideLabel :account-id="it.r.toAccountId" :wallet-id="it.r.toWalletId" /></template>
           <template v-else><SideLabel :account-id="it.r.accountId" :wallet-id="it.r.walletId" /> · {{ it.c ? B.catPath(it.r.categoryId) : 'Sans budget' }}</template>
         </span>
+        <span v-if="it.split" class="tx-sub">Réparti : {{ it.split }}</span>
         <span class="tx-sub">{{ it.freq }}, {{ it.until }}<template v-if="it.next"> · prochaine le {{ shortDate(it.next.date) }}</template></span>
       </span>
       <span class="tx-amt num">{{ it.sign }}{{ money(it.r.amount) }}</span>

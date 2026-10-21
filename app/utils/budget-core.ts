@@ -17,6 +17,13 @@ export interface Account { id: string, name: string, type: AccountType, initial:
 export interface Group { id: string, name: string, kind: Kind }
 export interface Category { id: string, name: string, groupId: string }
 
+/** Une ligne de répartition d'une opération (montant + budget + wallets). */
+export interface Split {
+  amount: number
+  categoryId: string | null
+  walletId: string | null
+  toWalletId: string | null
+}
 export interface TxnFields {
   label: string
   amount: number
@@ -26,6 +33,11 @@ export interface TxnFields {
   toAccountId: string | null
   toWalletId: string | null
   categoryId: string | null
+  /** Répartition facultative (au moins 2 lignes, somme = amount). Absente = une seule ligne,
+   *  décrite par categoryId / walletId / toWalletId (format historique, inchangé).
+   *  Quand elle est présente, ces champs gardent la ligne principale : une ancienne version
+   *  de l'app qui ignore `splits` reste cohérente (même montant, même compte). */
+  splits?: Split[]
 }
 export interface Txn extends TxnFields { id: string, date: string, recurrenceId: string | null }
 export interface Recurrence extends TxnFields {
@@ -160,6 +172,12 @@ export function seedDemo(s: BudgetState): void {
   T(7, 'Pizzeria', 42, 'Restaurants')
   T(8, 'Pharmacie', 18.9, 'Santé')
   T(9, 'Supermarché', 112.75, 'Courses')
+  // Exemple de répartition : une partie du ticket relève de la santé.
+  const last = s.txns[s.txns.length - 1]!
+  last.splits = [
+    { amount: 92.75, categoryId: c('Courses'), walletId: null, toWalletId: null },
+    { amount: 20, categoryId: c('Santé'), walletId: null, toWalletId: null },
+  ]
   T(10, 'Cinéma', 24, 'Sorties')
   T(11, 'Boulangerie', 7.6, 'Courses')
 }
@@ -187,10 +205,21 @@ export function normalize(o: any): BudgetState {
     .map((g: any) => ({ id: str(g.id), name: str(g.name) || 'Groupe', kind: g.kind === 'income' ? 'income' : 'expense' }))
   s.categories = (o.categories || []).filter((c: any) => c && c.id)
     .map((c: any) => ({ id: str(c.id), name: str(c.name) || 'Catégorie', groupId: str(c.groupId) }))
-  const fields = (x: any): TxnFields => ({
-    label: str(x.label), amount: Math.abs(num(x.amount)), type: ttype(x.type), accountId: str(x.accountId),
-    walletId: opt(x.walletId), toAccountId: opt(x.toAccountId), toWalletId: opt(x.toWalletId), categoryId: opt(x.categoryId),
-  })
+  const fields = (x: any): TxnFields => {
+    const f: TxnFields = {
+      label: str(x.label), amount: Math.abs(num(x.amount)), type: ttype(x.type), accountId: str(x.accountId),
+      walletId: opt(x.walletId), toAccountId: opt(x.toAccountId), toWalletId: opt(x.toWalletId), categoryId: opt(x.categoryId),
+    }
+    const splits = Array.isArray(x.splits)
+      ? x.splits.filter((l: any) => l && typeof l === 'object' && num(l.amount))
+          .map((l: any): Split => ({ amount: round2(Math.abs(num(l.amount))), categoryId: opt(l.categoryId), walletId: opt(l.walletId), toWalletId: opt(l.toWalletId) }))
+      : []
+    if (splits.length >= 2) {
+      f.splits = splits
+      f.amount = round2(splits.reduce((s: number, l: Split) => s + l.amount, 0)) // la somme des lignes fait foi
+    }
+    return f
+  }
   s.recurrences = (o.recurrences || []).filter((r: any) => r && r.id && isDate(r.start)).map((r: any): Recurrence => ({
     id: str(r.id), frequency: r.frequency === 'weekly' ? 'weekly' : 'monthly', start: r.start,
     end: isDate(r.end) ? r.end : null, generatedUntil: isDate(r.generatedUntil) ? r.generatedUntil : null, ...fields(r),
@@ -241,10 +270,24 @@ export const hasWallets = (S: BudgetState, aid: string | null | undefined) => is
    ========================================================================= */
 export interface Flow { a: string | null, w: string | null, v: number }
 /** Mouvements d'une opération : un côté (dépense, revenu) ou deux (virement). */
+/** Lignes d'une opération : sa répartition, ou une seule ligne (format historique). */
+export function linesOf(t: TxnFields): Split[] {
+  return t.splits && t.splits.length >= 2
+    ? t.splits
+    : [{ amount: t.amount, categoryId: t.categoryId, walletId: t.walletId, toWalletId: t.toWalletId }]
+}
+/** Ligne principale (la plus grosse) : recopiée dans les champs historiques pour la compatibilité. */
+export function mainLine(lines: Split[]): Split {
+  return lines.reduce((m, l) => l.amount > m.amount ? l : m, lines[0]!)
+}
 export function flows(t: TxnFields): Flow[] {
-  if (t.type === 'income') return [{ a: t.accountId, w: t.walletId, v: t.amount }]
-  if (t.type === 'expense') return [{ a: t.accountId, w: t.walletId, v: -t.amount }]
-  return [{ a: t.accountId, w: t.walletId, v: -t.amount }, { a: t.toAccountId, w: t.toWalletId, v: t.amount }]
+  const out: Flow[] = []
+  for (const l of linesOf(t)) {
+    if (t.type === 'income') out.push({ a: t.accountId, w: l.walletId, v: l.amount })
+    else if (t.type === 'expense') out.push({ a: t.accountId, w: l.walletId, v: -l.amount })
+    else out.push({ a: t.accountId, w: l.walletId, v: -l.amount }, { a: t.toAccountId, w: l.toWalletId, v: l.amount })
+  }
+  return out
 }
 /** Solde d'un compte, opérations jusqu'à `upTo` incluse (toutes si absent). */
 export function balance(S: BudgetState, aid: string, upTo?: string): number {
@@ -292,10 +335,14 @@ export function actualOf(S: BudgetState, list: Txn[], cid: string): Actual {
   const td = today()
   let done = 0, up = 0
   for (const t of list) {
-    if (t.categoryId !== cid || t.type === 'transfer') continue
-    const same = (kind === 'expense' && t.type === 'expense') || (kind === 'income' && t.type === 'income')
-    const v = same ? t.amount : -t.amount
-    if (t.date > td) up += v; else done += v
+    for (const l of linesOf(t)) {
+      if (l.categoryId !== cid) continue
+      // Un virement affecté à un budget compte comme une dépense (ex. « Épargne mensuelle »).
+      const outflow = t.type !== 'income'
+      const same = kind === 'expense' ? outflow : !outflow
+      const v = same ? l.amount : -l.amount
+      if (t.date > td) up += v; else done += v
+    }
   }
   return { done, up, total: done + up }
 }
@@ -312,7 +359,8 @@ export function uncategorized(S: BudgetState, mk: string, type: 'expense' | 'inc
   const td = today()
   let total = 0, up = 0
   for (const t of txnsOfMonth(S, mk)) {
-    if (t.type === type && !t.categoryId) { total += t.amount; if (t.date > td) up += t.amount }
+    if (t.type !== type) continue
+    for (const l of linesOf(t)) if (!l.categoryId) { total += l.amount; if (t.date > td) up += l.amount }
   }
   return { total, up }
 }
@@ -325,8 +373,10 @@ export function plannedTotals(S: BudgetState, mk: string) {
 /** Supprime des catégories et efface leurs références (opérations, séries, budgets). */
 export function forgetCategories(S: BudgetState, ids: string[]): void {
   const set = new Set(ids)
-  for (const t of S.txns) if (t.categoryId && set.has(t.categoryId)) t.categoryId = null
-  for (const r of S.recurrences) if (r.categoryId && set.has(r.categoryId)) r.categoryId = null
+  for (const x of [...S.txns, ...S.recurrences]) {
+    if (x.categoryId && set.has(x.categoryId)) x.categoryId = null
+    for (const l of x.splits ?? []) if (l.categoryId && set.has(l.categoryId)) l.categoryId = null
+  }
   for (const mk of Object.keys(S.plans)) {
     for (const id of set) delete S.plans[mk]![id]
     if (!Object.keys(S.plans[mk]!).length) delete S.plans[mk]
@@ -369,8 +419,9 @@ export function generate(S: BudgetState, r: Recurrence): boolean {
     // avec le même id (pas de doublon à la fusion).
     const id = `${r.id}@${d}`
     if (S.txns.some(t => t.id === id)) continue
-    S.txns.push({ id, date: d, label: r.label, amount: r.amount, type: r.type, accountId: r.accountId,
-      walletId: r.walletId, toAccountId: r.toAccountId, toWalletId: r.toWalletId, categoryId: r.categoryId, recurrenceId: r.id })
+    S.txns.push({ id, date: d, recurrenceId: r.id, label: r.label, amount: r.amount, type: r.type, accountId: r.accountId,
+      walletId: r.walletId, toAccountId: r.toAccountId, toWalletId: r.toWalletId, categoryId: r.categoryId,
+      ...(r.splits ? { splits: r.splits.map(l => ({ ...l })) } : {}) })
   }
   r.generatedUntil = limit
   return true

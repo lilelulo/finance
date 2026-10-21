@@ -25,7 +25,7 @@ function submit() {
 }
 async function remove() {
   if (!c) return
-  const n = B.S.txns.filter(t => t.categoryId === c.id).length
+  const n = B.S.txns.filter(t => t.categoryId === c.id || (t.splits ?? []).some(l => l.categoryId === c.id)).length
   const ok = await confirmDanger('Supprimer cette catégorie ?',
     `« ${c.name} » sera supprimée${n ? ` ; ${n} opération${n > 1 ? 's' : ''} passeront « sans budget »` : ''}. Les montants prévus pour cette catégorie seront effacés.`)
   if (!ok) return

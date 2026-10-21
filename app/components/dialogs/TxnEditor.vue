@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
-  amountText, datesBetween, endSeriesFrom, deleteSeries, flows, generate, isDate, mkey, money, parseAmount,
+  amountText, datesBetween, endSeriesFrom, deleteSeries, flows, generate, isDate, mainLine, mkey, money, parseAmount,
   recurrencePreview, round2, shortDate, today, uid,
 } from '~/utils/budget-core'
-import type { Frequency, Recurrence, Txn, TxnFields, TxType } from '~/utils/budget-core'
+import type { Frequency, Recurrence, Split, Txn, TxnFields, TxType } from '~/utils/budget-core'
 
-/* Saisie / modification d'une opération, avec récurrence et wallets. */
+/* Saisie / modification d'une opération : récurrence, wallets, et répartition
+   éventuelle sur plusieurs lignes (budgets et wallets). */
+interface LineForm { key: string, amount: string, categoryId: string, walletId: string, toWalletId: string }
 const props = defineProps<{ txnId: string | null }>()
 const emit = defineEmits<{ close: [] }>()
 
@@ -33,6 +35,8 @@ const f = reactive({
   recurring: !!series,
   frequency: (series?.frequency || 'monthly') as Frequency,
   end: series?.end || '',
+  split: !!old?.splits?.length,
+  lines: (old?.splits ?? []).map((l): LineForm => ({ key: uid(), amount: amountText(l.amount), categoryId: l.categoryId || '', walletId: l.walletId || '', toWalletId: l.toWalletId || '' })),
 })
 if (!B.acc(f.accountId)) f.accountId = B.S.accounts[0]?.id || ''
 const err = ref('')
@@ -52,15 +56,55 @@ const types: { v: TxType, label: string, icon: string }[] = [
   { v: 'expense', label: 'Dépense', icon: 'out' }, { v: 'income', label: 'Revenu', icon: 'in' }, { v: 'transfer', label: 'Virement', icon: 'swap' },
 ]
 
-watch(() => f.type, (v) => {
-  const k = B.kindOfCat(f.categoryId)
-  if (v === 'transfer' || (v === 'expense' && k !== 'expense') || (v === 'income' && k !== 'income')) f.categoryId = ''
+// Catégories proposées : revenus pour un revenu ; dépenses pour une dépense ou un virement
+// (un virement peut être compté dans un budget, ex. « Épargne mensuelle »).
+const catOk = (c: string) => !c || B.kindOfCat(c) === kind.value
+watch(() => f.type, () => {
+  if (!catOk(f.categoryId)) f.categoryId = ''
+  for (const l of f.lines) if (!catOk(l.categoryId)) l.categoryId = ''
 })
 watch(() => f.accountId, () => {
   if (!B.walletOf(f.accountId, f.walletId)) f.walletId = ''
+  for (const l of f.lines) if (!B.walletOf(f.accountId, l.walletId)) l.walletId = ''
   if (f.toAccountId === f.accountId && !B.hasWallets(f.accountId)) f.toAccountId = ''
 })
-watch(() => f.toAccountId, () => { if (!B.walletOf(f.toAccountId, f.toWalletId)) f.toWalletId = '' })
+watch(() => f.toAccountId, () => {
+  if (!B.walletOf(f.toAccountId, f.toWalletId)) f.toWalletId = ''
+  for (const l of f.lines) if (!B.walletOf(f.toAccountId, l.toWalletId)) l.toWalletId = ''
+})
+
+/* ---------- Répartition ---------- */
+const fromWallets = computed(() => B.hasWallets(f.accountId))
+const toWallets = computed(() => f.type === 'transfer' && B.hasWallets(f.toAccountId))
+const lineSum = computed(() => round2(f.lines.reduce((s, l) => s + (parseAmount(l.amount) || 0), 0)))
+const remaining = computed(() => round2((parseAmount(f.amount) || 0) - lineSum.value))
+const newLine = (o: Partial<LineForm> = {}): LineForm => ({ key: uid(), amount: '', categoryId: '', walletId: '', toWalletId: '', ...o })
+const splitLabel = computed(() => f.type === 'transfer'
+  ? (toWallets.value || fromWallets.value ? 'Répartir sur plusieurs wallets ou budgets' : 'Répartir sur plusieurs budgets')
+  : 'Répartir sur plusieurs budgets')
+
+function startSplit() {
+  f.lines = [
+    newLine({ amount: f.amount, categoryId: f.categoryId, walletId: f.walletId, toWalletId: f.toWalletId }),
+    newLine({ walletId: f.walletId }),
+  ]
+  f.split = true
+  focusLine(1)
+}
+function stopSplit() {
+  const filled = f.lines.filter(l => parseAmount(l.amount))
+  const main = filled.reduce<LineForm | undefined>((m, l) => !m || (parseAmount(l.amount) || 0) > (parseAmount(m.amount) || 0) ? l : m, undefined)
+  if (main) Object.assign(f, { categoryId: main.categoryId, walletId: main.walletId, toWalletId: main.toWalletId })
+  if (!parseAmount(f.amount) && lineSum.value) f.amount = amountText(lineSum.value)
+  f.split = false
+  f.lines = []
+}
+function addLine() { f.lines.push(newLine({ amount: remaining.value > 0 ? amountText(remaining.value) : '' })); focusLine(f.lines.length - 1) }
+function removeLine(i: number) { f.lines.splice(i, 1); if (f.lines.length < 2) stopSplit() }
+function fillRemaining(l: LineForm) { l.amount = amountText(round2((parseAmount(l.amount) || 0) + remaining.value)) }
+function focusLine(i: number) {
+  setTimeout(() => document.querySelectorAll<HTMLInputElement>('[data-line-amount]')[i]?.focus(), 30)
+}
 
 const wBal = (aid: string, wid: string | null) => money(B.walletBalance(aid, wid, td))
 
@@ -72,31 +116,51 @@ function impactNote(t: TxnFields & { date: string }) {
 
 async function submit() {
   err.value = ''
+  if (f.split && !parseAmount(f.amount) && lineSum.value > 0) f.amount = amountText(lineSum.value)
   const amount = parseAmount(f.amount)
   if (amount === null || amount <= 0) return (err.value = 'Indiquez un montant supérieur à 0.')
   if (!isDate(f.date)) return (err.value = 'Indiquez une date.')
   if (!B.acc(f.accountId)) return (err.value = 'Choisissez un compte.')
   if (f.type === 'transfer' && !B.acc(f.toAccountId)) return (err.value = 'Choisissez le compte de destination du virement.')
-  if (f.type === 'transfer' && f.toAccountId === f.accountId && (f.walletId || '') === (f.toWalletId || ''))
-    return (err.value = 'Pour un virement dans le même compte, choisissez deux wallets différents.')
+  // Lignes de répartition remplies (les lignes laissées vides sont ignorées).
+  const filled = f.split ? f.lines.filter(l => l.amount.trim() || l.categoryId) : []
+  if (f.split) {
+    if (filled.some(l => { const v = parseAmount(l.amount); return v === null || v <= 0 })) return (err.value = 'Chaque ligne de la répartition doit avoir un montant supérieur à 0.')
+    if (filled.length < 2) return (err.value = 'Une répartition demande au moins deux lignes (ou annulez la répartition).')
+    if (remaining.value !== 0) return (err.value = `La répartition ne correspond pas au montant : ${remaining.value > 0 ? 'il reste' : 'il y a'} ${money(Math.abs(remaining.value))} ${remaining.value > 0 ? 'à répartir' : 'de trop'}.`)
+  }
+  const sameAccountTransfer = f.type === 'transfer' && f.toAccountId === f.accountId
+  if (sameAccountTransfer && (f.split ? filled.some(l => (l.walletId || '') === (l.toWalletId || '')) : (f.walletId || '') === (f.toWalletId || '')))
+    return (err.value = 'Pour un virement dans le même compte, choisissez deux wallets différents (sur chaque ligne).')
   if (f.recurring && f.end && !datesBetween({ frequency: f.frequency, start: f.date, end: f.end }, f.date, f.end).length)
     return (err.value = 'La date de fin doit être après la date de la première échéance.')
 
   const S = B.S
+  const accW = (w: string) => B.walletOf(f.accountId, w) ? w : null
+  const toW = (w: string) => f.type === 'transfer' && B.walletOf(f.toAccountId, w) ? w : null
+  const catV = (c: string) => c && catOk(c) ? c : null
+  const splits: Split[] | undefined = f.split
+    ? filled.map(l => ({ amount: round2(parseAmount(l.amount)!), categoryId: catV(l.categoryId), walletId: accW(l.walletId), toWalletId: toW(l.toWalletId) }))
+    : undefined
+  // Champs historiques = ligne principale : une ancienne version de l'app reste cohérente.
+  const main = splits ? mainLine(splits) : { categoryId: catV(f.categoryId), walletId: accW(f.walletId), toWalletId: toW(f.toWalletId) }
   const base: TxnFields = {
     label: f.label.trim(), amount: round2(amount), type: f.type, accountId: f.accountId,
-    walletId: B.walletOf(f.accountId, f.walletId) ? f.walletId : null,
+    walletId: main.walletId,
     toAccountId: f.type === 'transfer' ? f.toAccountId : null,
-    toWalletId: f.type === 'transfer' && B.walletOf(f.toAccountId, f.toWalletId) ? f.toWalletId : null,
-    categoryId: f.type === 'transfer' ? null : (f.categoryId || null),
+    toWalletId: main.toWalletId,
+    categoryId: main.categoryId,
+    ...(splits ? { splits } : {}),
   }
+  /** Applique le formulaire à une opération existante (retire une ancienne répartition). */
+  const applyTo = (t: Txn) => { Object.assign(t, { date: f.date, ...base }); if (!splits) delete t.splits }
   const createSeries = () => {
-    const r: Recurrence = { id: uid(), frequency: f.frequency, start: f.date, end: f.end || null, generatedUntil: null, ...base }
+    const r: Recurrence = { id: uid(), frequency: f.frequency, start: f.date, end: f.end || null, generatedUntil: null, ...base, ...(splits ? { splits: splits.map(l => ({ ...l })) } : {}) }
     S.recurrences.push(r)
     generate(S, S.recurrences[S.recurrences.length - 1]!)
     return r
   }
-  const single = () => { S.txns.push({ id: uid(), date: f.date, recurrenceId: null, ...base }) }
+  const single = () => { S.txns.push({ id: uid(), date: f.date, recurrenceId: null, ...base, ...(splits ? { splits: splits.map(l => ({ ...l })) } : {}) }) }
   let msg = 'Opération enregistrée'
 
   if (!old) {
@@ -105,7 +169,7 @@ async function submit() {
   }
   else if (!series) {
     if (f.recurring) { S.txns = S.txns.filter(x => x.id !== old.id); createSeries(); msg = 'Opération transformée en série récurrente' }
-    else Object.assign(S.txns.find(x => x.id === old.id)!, { date: f.date, ...base })
+    else applyTo(S.txns.find(x => x.id === old.id)!)
   }
   else {
     const ruleChanged = !f.recurring || f.frequency !== series.frequency || (f.end || null) !== (series.end || null)
@@ -116,7 +180,7 @@ async function submit() {
     if (!scope) return
     const live = S.txns.find(x => x.id === old.id)
     if (!live) return emit('close')
-    if (scope === 'single') Object.assign(live, { date: f.date, ...base })
+    if (scope === 'single') applyTo(live)
     else {
       endSeriesFrom(S, live)
       if (f.recurring) createSeries(); else single()
@@ -184,7 +248,7 @@ async function remove() {
             </template>
           </select>
         </label>
-        <label v-if="B.hasWallets(f.accountId)" class="field"><span>{{ f.type === 'income' ? 'Dans le wallet' : 'Depuis le wallet' }}</span>
+        <label v-if="fromWallets && !f.split" class="field"><span>{{ f.type === 'income' ? 'Dans le wallet' : 'Depuis le wallet' }}</span>
           <select v-model="f.walletId">
             <option value="">Non affecté · {{ wBal(f.accountId, null) }}</option>
             <option v-for="w in B.walletsOf(f.accountId)" :key="w.id" :value="w.id">{{ w.name }} · {{ wBal(f.accountId, w.id) }}</option>
@@ -199,7 +263,7 @@ async function remove() {
             <option v-for="a in toAccounts" :key="a.id" :value="a.id">{{ a.name }}{{ a.id === f.accountId ? ' (autre wallet)' : '' }}</option>
           </select>
         </label>
-        <label v-if="B.hasWallets(f.toAccountId)" class="field"><span>Vers le wallet</span>
+        <label v-if="toWallets && !f.split" class="field"><span>Vers le wallet</span>
           <select v-model="f.toWalletId">
             <option value="">Non affecté · {{ wBal(f.toAccountId, null) }}</option>
             <option v-for="w in B.walletsOf(f.toAccountId)" :key="w.id" :value="w.id">{{ w.name }} · {{ wBal(f.toAccountId, w.id) }}</option>
@@ -207,16 +271,65 @@ async function remove() {
         </label>
         <span v-else />
       </div>
-      <label v-else class="field"><span>Budget concerné</span>
-        <select v-model="f.categoryId">
-          <option value="">Sans budget</option>
-          <template v-for="g in B.groupsOf(kind)" :key="g.id">
-            <optgroup v-if="B.catsOf(g.id).length" :label="g.name">
-              <option v-for="c in B.catsOf(g.id)" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </optgroup>
-          </template>
-        </select>
-      </label>
+
+      <!-- Une seule ligne : budget concerné -->
+      <template v-if="!f.split">
+        <label class="field"><span>Budget concerné<em v-if="f.type === 'transfer'"> facultatif</em></span>
+          <select v-model="f.categoryId">
+            <option value="">{{ f.type === 'transfer' ? 'Aucun (virement hors budget)' : 'Sans budget' }}</option>
+            <template v-for="g in B.groupsOf(kind)" :key="g.id">
+              <optgroup v-if="B.catsOf(g.id).length" :label="g.name">
+                <option v-for="c in B.catsOf(g.id)" :key="c.id" :value="c.id">{{ c.name }}</option>
+              </optgroup>
+            </template>
+          </select>
+        </label>
+        <button type="button" class="btn link" style="align-self:flex-start" @click="startSplit"><AppIcon name="plus" small /> {{ splitLabel }}</button>
+      </template>
+
+      <!-- Répartition sur plusieurs lignes -->
+      <div v-else class="split-box">
+        <div class="sec-head"><h3 style="font-size:15px">Répartition</h3><button type="button" class="btn link" @click="stopSplit">Annuler la répartition</button></div>
+        <div v-for="(l, i) in f.lines" :key="l.key" :class="['split-row', { 'w-from': fromWallets, 'w-to': toWallets }]">
+          <label class="field s-amount"><span>Montant</span>
+            <span class="amount-in"><input v-model="l.amount" data-line-amount inputmode="decimal" autocomplete="off" placeholder="0,00"><span>€</span></span>
+          </label>
+          <label class="field s-cat"><span>Budget<em v-if="f.type === 'transfer'"> facultatif</em></span>
+            <select v-model="l.categoryId">
+              <option value="">{{ f.type === 'transfer' ? 'Aucun' : 'Sans budget' }}</option>
+              <template v-for="g in B.groupsOf(kind)" :key="g.id">
+                <optgroup v-if="B.catsOf(g.id).length" :label="g.name">
+                  <option v-for="c in B.catsOf(g.id)" :key="c.id" :value="c.id">{{ c.name }}</option>
+                </optgroup>
+              </template>
+            </select>
+          </label>
+          <label v-if="fromWallets" class="field s-wfrom"><span>{{ f.type === 'income' ? 'Dans le wallet' : 'Depuis le wallet' }}</span>
+            <select v-model="l.walletId">
+              <option value="">Non affecté</option>
+              <option v-for="w in B.walletsOf(f.accountId)" :key="w.id" :value="w.id">{{ w.name }}</option>
+            </select>
+          </label>
+          <label v-if="toWallets" class="field s-wto"><span>Vers le wallet</span>
+            <select v-model="l.toWalletId">
+              <option value="">Non affecté</option>
+              <option v-for="w in B.walletsOf(f.toAccountId)" :key="w.id" :value="w.id">{{ w.name }}</option>
+            </select>
+          </label>
+          <div class="s-actions">
+            <button v-if="remaining !== 0" type="button" class="btn sm ghost" :title="remaining > 0 ? 'Ajouter le reste à cette ligne' : 'Retirer l\'excédent de cette ligne'" @click="fillRemaining(l)">{{ remaining > 0 ? '+ reste' : '− excédent' }}</button>
+            <button type="button" class="iconbtn" :aria-label="`Supprimer la ligne ${i + 1}`" @click="removeLine(i)"><AppIcon name="trash" /></button>
+          </div>
+        </div>
+        <div class="split-foot">
+          <button type="button" class="btn sm" @click="addLine"><AppIcon name="plus" /> Ajouter une ligne</button>
+          <span class="num small">
+            Réparti {{ money(lineSum) }} / {{ money(parseAmount(f.amount) || 0) }}
+            <b v-if="remaining !== 0" :class="remaining > 0 ? 'warn' : 'neg'"> · {{ remaining > 0 ? 'reste' : 'en trop' }} {{ money(Math.abs(remaining)) }}</b>
+            <b v-else class="pos"> · ✓</b>
+          </span>
+        </div>
+      </div>
       <div :class="['recbox', { on: f.recurring }]">
         <label class="switch">
           <input v-model="f.recurring" type="checkbox"><span class="sw" />

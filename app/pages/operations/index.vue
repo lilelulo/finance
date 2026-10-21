@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { dayLabel, monthLabel, signedFor, signedMoney } from '~/utils/budget-core'
+import { dayLabel, flows, linesOf, monthLabel, signedFor, signedMoney } from '~/utils/budget-core'
 import type { Txn } from '~/utils/budget-core'
 
 definePageMeta({ title: 'Opérations' })
@@ -23,13 +23,13 @@ const wal = computed(() => {
 const list = computed(() => {
   let l = B.txnsOfMonth(month.value)
   const f = acc.value, w = wal.value
-  if (f) l = l.filter(t => (t.type === 'transfer' ? [[t.accountId, t.walletId], [t.toAccountId, t.toWalletId]] : [[t.accountId, t.walletId]])
-    .some(([a, x]) => a === f && (w === undefined || (x || null) === w)))
+  if (f) l = l.filter(t => flows(t).some(x => x.a === f && (w === undefined || (x.w || null) === w)))
   const q = search.value.trim().toLowerCase()
   if (q) {
-    l = l.filter(t => [t.label, B.cat(t.categoryId)?.name, B.grp(B.cat(t.categoryId)?.groupId)?.name, B.acc(t.accountId)?.name,
-      B.acc(t.toAccountId)?.name, B.walletOf(t.accountId, t.walletId)?.name, B.walletOf(t.toAccountId, t.toWalletId)?.name,
-      String(t.amount).replace('.', ',')].join(' ').toLowerCase().includes(q))
+    l = l.filter(t => [t.label, B.acc(t.accountId)?.name, B.acc(t.toAccountId)?.name, String(t.amount).replace('.', ','),
+      ...linesOf(t).flatMap(x => [B.cat(x.categoryId)?.name, B.grp(B.cat(x.categoryId)?.groupId)?.name,
+        B.walletOf(t.accountId, x.walletId)?.name, B.walletOf(t.toAccountId, x.toWalletId)?.name])]
+      .join(' ').toLowerCase().includes(q))
   }
   return [...l].sort((a, b) => b.date.localeCompare(a.date))
 })

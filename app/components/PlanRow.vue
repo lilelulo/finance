@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { amountText, money, parseAmount, round2, setPlanned, signedMoney } from '~/utils/budget-core'
+import { actualOf, amountText, money, parseAmount, round2, setPlanned, signedMoney } from '~/utils/budget-core'
 import type { Category, Kind, Txn } from '~/utils/budget-core'
 
 /* Une ligne du budget : montant prévu saisi au fil de la frappe. */
@@ -8,15 +8,8 @@ const props = defineProps<{ c: Category, kind: Kind, month: string, monthTxns: T
 const B = useBudget()
 
 const planned = computed(() => B.planned(props.month, props.c.id))
-const real = computed(() => {
-  // réel = même calcul que la synthèse (remboursements en déduction)
-  let v = 0
-  for (const t of props.monthTxns) {
-    if (t.categoryId !== props.c.id || t.type === 'transfer') continue
-    v += t.type === props.kind ? t.amount : -t.amount
-  }
-  return v
-})
+// Réel = même calcul que la synthèse (répartitions, virements budgétés, remboursements en déduction).
+const real = computed(() => actualOf(B.S, props.monthTxns, props.c.id).total)
 const ecart = computed(() => props.kind === 'expense' ? planned.value - real.value : real.value - planned.value)
 
 const text = ref(amountText(planned.value))
